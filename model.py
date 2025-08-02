@@ -296,6 +296,7 @@ class BaselineModel(torch.nn.Module):
                     if k in item:
                         batch_emb_data[i, j] = item[k]
 
+
             # batch-convert and transfer to GPU
             tensor_feature = torch.from_numpy(batch_emb_data).to(self.dev)
             item_feat_list.append(self.emb_transform[k](tensor_feature))

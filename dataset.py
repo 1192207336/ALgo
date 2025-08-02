@@ -420,6 +420,7 @@ class MyTestDataset(MyDataset):
         return seq, token_type, seq_feat, user_id
 
 
+
 def save_emb(emb, save_path):
     """
     将Embedding保存为二进制文件
