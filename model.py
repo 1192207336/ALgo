@@ -181,7 +181,7 @@ class BaselineModel(torch.nn.Module):
         self.ITEM_CONTINUAL_FEAT = feat_types['item_continual']
         self.USER_ARRAY_FEAT = {k: feat_statistics[k] for k in feat_types['user_array']}
         self.ITEM_ARRAY_FEAT = {k: feat_statistics[k] for k in feat_types['item_array']}
-        EMB_SHAPE_DICT = {"81": 32, "82": 1024, "83": 3584, "84": 4096, "85": 3584, "86": 3584}
+        EMB_SHAPE_DICT = {"81": 32, "82": 1024, "83": 3584, "84": 4096, "85": 3584, "86": 1024}
         self.ITEM_EMB_FEAT = {k: EMB_SHAPE_DICT[k] for k in feat_types['item_emb']}  # 记录的是不同多模态特征的维度
 
     def feat2tensor(self, seq_feature, k):
@@ -288,6 +288,9 @@ class BaselineModel(torch.nn.Module):
             # pre-allocate tensor
             batch_emb_data = np.zeros((batch_size, seq_len, emb_dim), dtype=np.float32)
 
+            # print(batch_emb_data.shape)
+            # print(len(feature_array))
+            # print(len(seq))
             for i, seq in enumerate(feature_array):
                 for j, item in enumerate(seq):
                     if k in item:

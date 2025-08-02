@@ -6,4 +6,6 @@ echo ${RUNTIME_SCRIPT_DIR}
 cd ${RUNTIME_SCRIPT_DIR}
 
 # write your code below
-python -u main.py
+#python -u main.py
+
+python -u main.py --mm_emb_id 81 82 83 84 86
