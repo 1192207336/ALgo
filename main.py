@@ -21,20 +21,23 @@ def get_args():
 
     # Train params
     parser.add_argument('--batch_size', default=128, type=int)
-    parser.add_argument('--lr', default=0.001, type=float)
+    parser.add_argument('--lr', default=0.0001, type=float)
     parser.add_argument('--maxlen', default=101, type=int)
 
     # Baseline Model construction
-    parser.add_argument('--hidden_units', default=32, type=int)
-    parser.add_argument('--num_blocks', default=1, type=int)
-    parser.add_argument('--num_epochs', default=3, type=int)
-    parser.add_argument('--num_heads', default=1, type=int)
-    parser.add_argument('--dropout_rate', default=0.2, type=float)
-    parser.add_argument('--l2_emb', default=0.0, type=float)
+    parser.add_argument('--hidden_units', default=128, type=int)
+    parser.add_argument('--num_blocks', default=4, type=int)
+    parser.add_argument('--num_epochs', default=20, type=int)
+    parser.add_argument('--num_heads', default=4, type=int)
+    parser.add_argument('--dropout_rate', default=0.1, type=float)
+    parser.add_argument('--l2_emb', default=1e-6, type=float)
     parser.add_argument('--device', default='cuda', type=str)
     parser.add_argument('--inference_only', action='store_true')
     parser.add_argument('--state_dict_path', default=None, type=str)
     parser.add_argument('--norm_first', action='store_true')
+    parser.add_argument('--num_interests',default=8,  type=int)
+    parser.add_argument('--text_dim', default=768, type=int)
+    parser.add_argument('--image_dim', default=512, type=int)
 
     # MMemb Feature ID
     parser.add_argument('--mm_emb_id', nargs='+', default=['81'], type=str, choices=[str(s) for s in range(81, 87)])
@@ -92,7 +95,7 @@ if __name__ == '__main__':
             raise RuntimeError('failed loading state_dicts, pls check file path!')
 
     bce_criterion = torch.nn.BCEWithLogitsLoss(reduction='mean')
-    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, betas=(0.9, 0.98))
+    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, betas=(0.9, 0.999), weight_decay=1e-5)
 
     best_val_ndcg, best_val_hr = 0.0, 0.0
     best_test_ndcg, best_test_hr = 0.0, 0.0
@@ -104,7 +107,8 @@ if __name__ == '__main__':
         model.train()
         if args.inference_only:
             break
-        for step, batch in tqdm(enumerate(train_loader), total=len(train_loader)):
+        loop = tqdm(enumerate(train_loader), total=len(train_loader))
+        for step, batch in loop:
             seq, pos, neg, token_type, next_token_type, next_action_type, seq_feat, pos_feat, neg_feat = batch
             seq = seq.to(args.device)
             pos = pos.to(args.device)
@@ -136,9 +140,12 @@ if __name__ == '__main__':
             loss.backward()
             optimizer.step()
 
+            loop.set_description(f'Epoch [{epoch}/{args.num_epochs}]')
+            loop.set_postfix(loss=loss.detach().cpu().numpy())
+
         model.eval()
         valid_loss_sum = 0
-        for step, batch in tqdm(enumerate(valid_loader), total=len(valid_loader)):
+        for step, batch in enumerate(valid_loader):
             seq, pos, neg, token_type, next_token_type, next_action_type, seq_feat, pos_feat, neg_feat = batch
             seq = seq.to(args.device)
             pos = pos.to(args.device)
@@ -155,6 +162,8 @@ if __name__ == '__main__':
             valid_loss_sum += loss.item()
         valid_loss_sum /= len(valid_loader)
         writer.add_scalar('Loss/valid', valid_loss_sum, global_step)
+
+        print(f"Validation loss: {valid_loss_sum}")
 
         save_dir = Path(os.environ.get('TRAIN_CKPT_PATH'), f"global_step{global_step}.valid_loss={valid_loss_sum:.4f}")
         save_dir.mkdir(parents=True, exist_ok=True)

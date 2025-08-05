@@ -7,6 +7,8 @@ from tqdm import tqdm
 
 from dataset import save_emb
 
+def telu(input):
+    return input * torch.tanh(torch.exp(input))
 
 class FlashMultiHeadAttention(torch.nn.Module):
     def __init__(self, hidden_units, num_heads, dropout_rate):
@@ -27,23 +29,19 @@ class FlashMultiHeadAttention(torch.nn.Module):
     def forward(self, query, key, value, attn_mask=None):
         batch_size, seq_len, _ = query.size()
 
-        # 计算Q, K, V
         Q = self.q_linear(query)
         K = self.k_linear(key)
         V = self.v_linear(value)
 
-        # reshape为multi-head格式
         Q = Q.view(batch_size, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
         K = K.view(batch_size, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
         V = V.view(batch_size, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
 
         if hasattr(F, 'scaled_dot_product_attention'):
-            # PyTorch 2.0+ 使用内置的Flash Attention
             attn_output = F.scaled_dot_product_attention(
                 Q, K, V, dropout_p=self.dropout_rate if self.training else 0.0, attn_mask=attn_mask.unsqueeze(1)
             )
         else:
-            # 降级到标准注意力机制
             scale = (self.head_dim) ** -0.5
             scores = torch.matmul(Q, K.transpose(-2, -1)) * scale
 
@@ -54,29 +52,48 @@ class FlashMultiHeadAttention(torch.nn.Module):
             attn_weights = F.dropout(attn_weights, p=self.dropout_rate, training=self.training)
             attn_output = torch.matmul(attn_weights, V)
 
-        # reshape回原来的格式
         attn_output = attn_output.transpose(1, 2).contiguous().view(batch_size, seq_len, self.hidden_units)
-
-        # 最终的线性变换
         output = self.out_linear(attn_output)
-
         return output, None
-
 
 class PointWiseFeedForward(torch.nn.Module):
     def __init__(self, hidden_units, dropout_rate):
         super(PointWiseFeedForward, self).__init__()
+        self.ffn = torch.nn.Sequential(
+            torch.nn.Linear(hidden_units, hidden_units * 4),
+            torch.nn.GELU(),
+            torch.nn.Dropout(p=dropout_rate),
+            torch.nn.Linear(hidden_units * 4, hidden_units),
+            torch.nn.Dropout(p=dropout_rate),
+        )
 
-        self.conv1 = torch.nn.Conv1d(hidden_units, hidden_units, kernel_size=1)
-        self.dropout1 = torch.nn.Dropout(p=dropout_rate)
-        self.relu = torch.nn.ReLU()
-        self.conv2 = torch.nn.Conv1d(hidden_units, hidden_units, kernel_size=1)
-        self.dropout2 = torch.nn.Dropout(p=dropout_rate)
+    def forward(self, x):
+        return self.ffn(x)
 
-    def forward(self, inputs):
-        outputs = self.dropout2(self.conv2(self.relu(self.dropout1(self.conv1(inputs.transpose(-1, -2))))))
-        outputs = outputs.transpose(-1, -2)  # as Conv1D requires (N, C, Length)
-        return outputs
+class BilinearInteraction(torch.nn.Module):
+    def __init__(self, input_dim):
+        super(BilinearInteraction, self).__init__()
+        self.W = torch.nn.Parameter(torch.Tensor(input_dim, input_dim))
+        torch.nn.init.xavier_uniform_(self.W)
+
+    def forward(self, x):
+        bilinear = torch.matmul(x, self.W)
+        interaction = bilinear * x
+        return interaction
+
+class MultiInterestExtractor(torch.nn.Module):
+    def __init__(self, hidden_units, num_interests):
+        super(MultiInterestExtractor, self).__init__()
+        self.num_interests = num_interests
+        self.attention = torch.nn.Linear(hidden_units, num_interests, bias=False)
+
+    def forward(self, seqs, mask):
+        mask = mask.to(seqs.device)  # 确保 mask 与 seqs 在同一设备
+        attn_score = self.attention(seqs)  # [B, T, K]
+        attn_score = attn_score.masked_fill(mask.unsqueeze(-1) == 0, -1e9)
+        attn_weight = F.softmax(attn_score, dim=1)  # [B, T, K]
+        interests = torch.einsum("btd,btk->bkd", seqs, attn_weight)  # [B, K, D]
+        return interests
 
 
 class BaselineModel(torch.nn.Module):
@@ -166,6 +183,38 @@ class BaselineModel(torch.nn.Module):
             self.sparse_emb[k] = torch.nn.Embedding(self.USER_ARRAY_FEAT[k] + 1, args.hidden_units, padding_idx=0)
         for k in self.ITEM_EMB_FEAT:
             self.emb_transform[k] = torch.nn.Linear(self.ITEM_EMB_FEAT[k], args.hidden_units)
+
+        self.dropout = args.dropout_rate
+        self.interest_extractor = MultiInterestExtractor(args.hidden_units, args.num_interests)
+        self.feature_cross_user = BilinearInteraction(args.hidden_units)
+        self.feature_cross_item = BilinearInteraction(args.hidden_units)
+
+        self.userdnn = torch.nn.Sequential(
+            torch.nn.Linear(userdim, args.hidden_units),
+            torch.nn.ReLU(),
+            torch.nn.Dropout(p=args.dropout_rate)
+        )
+
+        self.itemdnn = torch.nn.Sequential(
+            torch.nn.Linear(itemdim, args.hidden_units),
+            torch.nn.ReLU(),
+            torch.nn.Dropout(p=args.dropout_rate)
+        )
+
+        self.text_proj = torch.nn.Linear(args.text_dim, args.hidden_units)
+        self.image_proj = torch.nn.Linear(args.image_dim, args.hidden_units)
+
+        self.text_gate = torch.nn.Sequential(
+            torch.nn.Linear(args.hidden_units, args.hidden_units),
+            torch.nn.Sigmoid()
+        )
+        self.image_gate = torch.nn.Sequential(
+            torch.nn.Linear(args.hidden_units, args.hidden_units),
+            torch.nn.Sigmoid()
+        )
+
+        self.query_proj = torch.nn.Linear(args.hidden_units, args.hidden_units)
+        self.query_token = torch.nn.Parameter(torch.randn(1, args.hidden_units))
 
     def _init_feat_info(self, feat_statistics, feat_types):
         """
@@ -303,14 +352,20 @@ class BaselineModel(torch.nn.Module):
 
         # merge features
         all_item_emb = torch.cat(item_feat_list, dim=2)
-        all_item_emb = torch.relu(self.itemdnn(all_item_emb))
+        all_item_emb = telu(self.itemdnn(all_item_emb))
         if include_user:
             all_user_emb = torch.cat(user_feat_list, dim=2)
-            all_user_emb = torch.relu(self.userdnn(all_user_emb))
+            all_user_emb = telu(self.userdnn(all_user_emb))
             seqs_emb = all_item_emb + all_user_emb
         else:
             seqs_emb = all_item_emb
         return seqs_emb
+
+    def encode_item(self, item_embs, text_feat, image_feat):
+        text_emb = self.text_proj(text_feat)
+        image_emb = self.image_proj(image_feat)
+        fused_emb = item_embs + self.text_gate(text_emb) + self.image_gate(image_emb)
+        return self.itemdnn(fused_emb)
 
     def log2feats(self, log_seqs, mask, seq_feature):
         """
@@ -325,7 +380,7 @@ class BaselineModel(torch.nn.Module):
         batch_size = log_seqs.shape[0]
         maxlen = log_seqs.shape[1]
         seqs = self.feat2emb(log_seqs, seq_feature, mask=mask, include_user=True)
-        seqs *= self.item_emb.embedding_dim**0.5
+        seqs *= self.item_emb.embedding_dim ** 0.5
         poss = torch.arange(1, maxlen + 1, device=self.dev).unsqueeze(0).expand(batch_size, -1).clone()
         poss *= log_seqs != 0
         seqs += self.pos_emb(poss)
@@ -349,7 +404,6 @@ class BaselineModel(torch.nn.Module):
                 seqs = self.forward_layernorms[i](seqs + self.forward_layers[i](seqs))
 
         log_feats = self.last_layernorm(seqs)
-
         return log_feats
 
     def forward(
@@ -373,14 +427,28 @@ class BaselineModel(torch.nn.Module):
             pos_logits: 正样本logits，形状为 [batch_size, maxlen]
             neg_logits: 负样本logits，形状为 [batch_size, maxlen]
         """
+
         log_feats = self.log2feats(user_item, mask, seq_feature)
         loss_mask = (next_mask == 1).to(self.dev)
 
+        interests = self.interest_extractor(log_feats, mask != 0)  # [B, K, D]
+        # query-aware attention 聚合
         pos_embs = self.feat2emb(pos_seqs, pos_feature, include_user=False)
-        neg_embs = self.feat2emb(neg_seqs, neg_feature, include_user=False)
+        query = pos_embs.mean(dim=1)
+        query = self.query_proj(query)  # 添加投影层稳定 query 表达
+        attn_weights = torch.matmul(interests, query.unsqueeze(-1)).squeeze(-1)  # [B, K]
+        attn_weights = F.softmax(attn_weights, dim=1)
+        final_interest = torch.sum(attn_weights.unsqueeze(-1) * interests, dim=1)  # [B, D]
+        final_interest = self.feature_cross_user(final_interest)
+        final_interest = F.dropout(final_interest, p=self.dropout, training=self.training)
+        final_interest = F.layer_norm(final_interest, [final_interest.shape[-1]])
 
-        pos_logits = (log_feats * pos_embs).sum(dim=-1)
-        neg_logits = (log_feats * neg_embs).sum(dim=-1)
+        pos_embs = self.feature_cross_item(pos_embs)
+        neg_embs = self.feat2emb(neg_seqs, neg_feature, include_user=False)
+        neg_embs = self.feature_cross_item(neg_embs)
+
+        pos_logits = (final_interest.unsqueeze(1) * pos_embs).sum(dim=-1)
+        neg_logits = (final_interest.unsqueeze(1) * neg_embs).sum(dim=-1)
         pos_logits = pos_logits * loss_mask
         neg_logits = neg_logits * loss_mask
 
@@ -397,9 +465,12 @@ class BaselineModel(torch.nn.Module):
             final_feat: 用户序列的表征，形状为 [batch_size, hidden_units]
         """
         log_feats = self.log2feats(log_seqs, mask, seq_feature)
-
-        final_feat = log_feats[:, -1, :]
-
+        interests = self.interest_extractor(log_feats, mask != 0)
+        batch_size = interests.shape[0]
+        query = self.query_token.expand(batch_size, -1)
+        attn_weights = torch.matmul(interests, query.unsqueeze(-1)).squeeze(-1)
+        attn_weights = F.softmax(attn_weights, dim=1)
+        final_feat = torch.sum(attn_weights.unsqueeze(-1) * interests, dim=1)
         return final_feat
 
     def save_item_emb(self, item_ids, retrieval_ids, feat_dict, save_path, batch_size=1024):
@@ -434,3 +505,4 @@ class BaselineModel(torch.nn.Module):
         final_embs = np.concatenate(all_embs, axis=0)
         save_emb(final_embs, Path(save_path, 'embedding.fbin'))
         save_emb(final_ids, Path(save_path, 'id.u64bin'))
+

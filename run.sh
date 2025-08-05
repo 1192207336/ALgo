@@ -8,4 +8,4 @@ cd ${RUNTIME_SCRIPT_DIR}
 # write your code below
 #python -u main.py
 
-python -u main.py --mm_emb_id 81 82 83 84 86
+python -u main.py --mm_emb_id 81 82 83 84 86 --norm_first

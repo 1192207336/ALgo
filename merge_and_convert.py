@@ -5,15 +5,16 @@ import numpy as np
 import argparse
 from tqdm import tqdm
 from pathlib import Path
+from rename_to_json import rename_files_to_json
 
 
-def merge_json_to_pkl(target_folder):
+def merge_json_to_pkl(target_folder, sub_folder):
     """
     处理目标文件夹中的JSON文件：
-    1. 将所有JSON文件内容合并到新的emb_81_32.json文件
-    2. 将合并后的JSON文件转换为emb_81_32.pkl文件
+    1. 将所有JSON文件内容合并到新的json文件
+    2. 将合并后的JSON文件转换为pkl文件
     """
-    target_path = Path(target_folder)
+    target_path = Path(os.path.join(target_folder, sub_folder))
 
     # 步骤1: 检查目标文件夹
     if not target_path.exists():
@@ -34,7 +35,7 @@ def merge_json_to_pkl(target_folder):
         return
 
     # 步骤3: 创建合并的JSON文件
-    merged_json_path = target_path / "emb_81_32.json"
+    merged_json_path = os.path.join(target_folder, f"{sub_folder}.json")
     total_lines = 0
 
     # 先计算总行数用于进度条
@@ -51,11 +52,10 @@ def merge_json_to_pkl(target_folder):
                 for line in infile:
                     outfile.write(line)
 
-    print(f"成功创建合并文件: {merged_json_path}")
-    print(f"总行数: {total_lines}")
+    print(f"成功创建合并文件: {merged_json_path}, 总行数: {total_lines}")
 
     # 步骤4: 将JSON转换为PKL
-    pkl_path = target_path / "emb_81_32.pkl"
+    pkl_path = Path(os.path.join(target_folder, f"{sub_folder}.pkl"))
     emb_dict = {}
     processed_count = 0
 
@@ -83,10 +83,7 @@ def merge_json_to_pkl(target_folder):
     with open(pkl_path, 'wb') as pkl_file:
         pickle.dump(emb_dict, pkl_file)
 
-    print(f"成功创建PKL文件: {pkl_path}")
-    print(f"嵌入向量总数: {len(emb_dict)}")
-    print(f"处理的行数: {processed_count}")
-    print("操作完成!")
+    print(f"成功创建PKL文件: {pkl_path}, 嵌入向量总数: {len(emb_dict)}, 处理的行数: {processed_count}")
 
 
 if __name__ == "__main__":
@@ -96,13 +93,23 @@ if __name__ == "__main__":
         formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
     parser.add_argument(
-        'folder',
+        '--folder',
         type=str,
         help='目标文件夹路径'
+    )
+    parser.add_argument(
+        '-d', '--dry-run',
+        action='store_true',
+        help='预览模式，仅显示将要执行的操作而不实际修改文件'
     )
 
     # 解析参数
     args = parser.parse_args()
 
-    # 执行处理
-    merge_json_to_pkl(args.folder)
+    folders = ['emb_81_32', 'emb_82_1024', 'emb_83_3584', 'emb_84_4096', 'emb_85_3584', 'emb_86_3584']
+    SHAPE_DICT = {"81": 32, "82": 1024, "83": 3584, "84": 4096, "85": 3584, "86": 3584}
+
+    for folder in folders:
+        # rename_files_to_json(os.path.join(args.folder, folder), args.dry_run)
+        # 执行处理
+        merge_json_to_pkl(args.folder, folder)

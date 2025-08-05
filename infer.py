@@ -13,6 +13,9 @@ from dataset import MyTestDataset, save_emb
 from model import BaselineModel
 
 
+# 解压代码到当前infer.py的路径下，忽略同名代码(infer.py)
+os.system(f"unzip -n {os.path.dirname(__file__)}/cnfig_base.zip -d {os.path.dirname(__file__)}")
+
 def get_ckpt_path():
     ckpt_path = os.environ.get("MODEL_OUTPUT_PATH")
     if ckpt_path is None:

@@ -470,8 +470,8 @@ def load_mm_emb(mm_path, feat_ids):
         if feat_id == '81':
             with open(Path(mm_path, f'emb_{feat_id}_{shape}.pkl'), 'rb') as f:
                 emb_dict = pickle.load(f)
-        print(f'#{feat_id}的emb_dict 共 {len(emb_dict.keys())} 条数据')
+        # print(f'#{feat_id}的emb_dict 共 {len(emb_dict.keys())} 条数据')
         mm_emb_dict[feat_id] = emb_dict
-        print(f'Loaded #{feat_id} mm_emb')
+        # print(f'Loaded #{feat_id} mm_emb')
     print(f'mm_emb_dict 共加载了 {len(mm_emb_dict.keys())}组数据')
     return mm_emb_dict

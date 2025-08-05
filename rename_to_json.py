@@ -70,7 +70,7 @@ if __name__ == "__main__":
         formatter_class=argparse.RawTextHelpFormatter
     )
     parser.add_argument(
-        'folder',
+        '--folder',
         type=str,
         help='目标文件夹路径'
     )
